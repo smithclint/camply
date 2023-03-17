@@ -24,6 +24,7 @@ from camply.search.search_recreationdotgov import (
     SearchRecreationDotGovTimedEntry,
 )
 from camply.search.search_reserve_california import SearchReserveCalifornia
+from camply.search.search_reserve_florida import SearchReserveFlorida
 from camply.search.search_yellowstone import SearchYellowstone
 
 CAMPSITE_SEARCH_PROVIDER: Dict[str, Type[BaseCampingSearch]] = {
