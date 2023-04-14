@@ -4,7 +4,6 @@ YAML Utilities for Camply
 
 import logging
 import os
-from datetime import datetime
 from pathlib import Path
 from re import compile
 from typing import Any, Dict, Tuple
@@ -13,8 +12,8 @@ import yaml
 from yaml import SafeLoader, load
 
 from camply.config import SearchConfig
-from camply.containers import SearchWindow
 from camply.utils import make_list
+from camply.utils.general_utils import days_of_the_week_mapping, handle_search_windows
 
 logger = logging.getLogger(__name__)
 
@@ -98,12 +97,20 @@ def yaml_file_to_arguments(
     yaml_search = read_yaml(path=file_path)
     logger.info(f"YAML File Parsed: {Path(file_path).name}")
     provider = yaml_search.get("provider", "RecreationDotGov")
-    start_date = datetime.strptime(str(yaml_search["start_date"]), "%Y-%m-%d")
-    end_date = datetime.strptime(str(yaml_search["end_date"]), "%Y-%m-%d")
+    search_window = handle_search_windows(
+        start_date=yaml_search.get("start_date", []),
+        end_date=yaml_search.get("end_date", []),
+    )
     nights = int(yaml_search.get("nights", 1))
     recreation_area = yaml_search.get("recreation_area", None)
     campgrounds = yaml_search.get("campgrounds", None)
     campsites = yaml_search.get("campsites", None)
+    days_of_the_week = yaml_search.get("days", None)
+    if days_of_the_week is not None:
+        lower_mapping = {
+            key.lower(): value for key, value in days_of_the_week_mapping.items()
+        }
+        days_of_the_week = [lower_mapping[item.lower()] for item in days_of_the_week]
     weekends_only = yaml_search.get("weekends", False)
     continuous = yaml_search.get("continuous", True)
     polling_interval = yaml_search.get(
@@ -120,14 +127,13 @@ def yaml_file_to_arguments(
     offline_search = yaml_search.get("offline_search", False)
     offline_search_path = yaml_search.get("offline_search_path", None)
 
-    search_window = SearchWindow(start_date=start_date, end_date=end_date)
-
     provider_kwargs = {
         "search_window": search_window,
         "recreation_area": recreation_area,
         "campgrounds": campgrounds,
         "campsites": campsites,
         "weekends_only": weekends_only,
+        "days_of_the_week": days_of_the_week,
         "nights": nights,
         "equipment": equipment,
         "offline_search": offline_search,

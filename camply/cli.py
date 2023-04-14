@@ -5,8 +5,7 @@ Camply Command Line Interface
 import logging
 import sys
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union
 
 import click
 from rich import traceback
@@ -16,6 +15,8 @@ from camply import __application__, __version__
 from camply.config import EquipmentOptions, SearchConfig, logging_config
 from camply.config.logging_config import set_up_logging
 from camply.containers import SearchWindow
+from camply.containers.examples import example_campsite
+from camply.notifications import MultiNotifierProvider
 from camply.providers import (
     GOING_TO_CAMP,
     RECREATION_DOT_GOV,
@@ -25,6 +26,7 @@ from camply.providers import (
 )
 from camply.search import CAMPSITE_SEARCH_PROVIDER
 from camply.utils import configure_camply, log_camply, make_list, yaml_utils
+from camply.utils.general_utils import days_of_the_week_mapping, handle_search_windows
 from camply.utils.logging_utils import log_sorted_response
 
 logging.Logger.camply = log_camply
@@ -318,11 +320,13 @@ def campgrounds(
 # `campsite` arguments
 start_date_argument = click.option(
     "--start-date",
+    multiple=True,
     default=None,
     help="(YYYY-MM-DD) Start of Search window. You will be arriving this day.",
 )
 end_date_argument = click.option(
     "--end-date",
+    multiple=True,
     default=None,
     help="(YYYY-MM-DD) End of Search window. You will be checking out this day.",
 )
@@ -356,16 +360,16 @@ polling_interval_argument = click.option(
     help="Enables continuous searching. How often to wait in between "
     "checks (in minutes). Defaults to 10, cannot be less than 5.",
 )
-notifications_argument = click.option(
-    "--notifications",
-    multiple=True,
-    show_default=True,
-    default=[],
-    help="Enables continuous searching. Types of notifications to receive. "
+notification_kwargs = {
+    "multiple": True,
+    "show_default": True,
+    "default": [],
+    "help": "Enables continuous searching. Types of notifications to receive. "
     "Options available are 'email', 'pushover', "
     "'pushbullet', 'telegram', 'twilio', or 'silent'. Defaults to 'silent' - "
     "which just logs messages to console.",
-)
+}
+notifications_argument = click.option("--notifications", **notification_kwargs)
 notify_first_try_argument = click.option(
     "--notify-first-try",
     is_flag=True,
@@ -443,6 +447,16 @@ offline_search_path_argument = click.option(
     "a JSON file, depending on the file extension. When not specified, "
     "the filename will default to `camply_campsites.json`",
 )
+day_of_the_week_argument = click.option(
+    "--day",
+    multiple=True,
+    show_default=False,
+    type=click.Choice(
+        choices=list(days_of_the_week_mapping.keys()), case_sensitive=False
+    ),
+    metavar="TEXT",
+    help="Day(s) of the Week to search.",
+)
 
 
 def _get_equipment(equipment: Optional[List[str]]) -> List[Tuple[str, Optional[int]]]:
@@ -465,8 +479,8 @@ def _validate_campsites(
     rec_area: Optional[int],
     campground: Optional[int],
     campsite: Optional[int],
-    start_date: Optional[str],
-    end_date: Optional[str],
+    start_date: Tuple[str],
+    end_date: Tuple[str],
     provider: str,
     yaml_config: Optional[str],
     continuous: bool,
@@ -475,8 +489,9 @@ def _validate_campsites(
     notify_first_try: bool,
     search_forever: bool,
     search_once: bool,
+    day: Optional[Tuple[str]],
     **kwargs: Dict[str, Any],
-) -> bool:
+) -> Tuple[bool, List[SearchWindow], Set[int]]:
     """
     Validate the campsites portion of the CLI
 
@@ -496,12 +511,14 @@ def _validate_campsites(
     notifications: List[str]
     notify_first_try: bool
     search_forever: bool
+    day: Optional[Tuple[str]]
     **kwargs: Dict[str, Any]
 
     Returns
     -------
-    continuous: bool
-        Returns whether the search should be continuous
+    Tuple[bool, List[SearchWindow], Set[int]]
+        Tuple containing continuous run eval, search_windows,
+        and days of the week
     """
     if provider.startswith(RECREATION_DOT_GOV) and all(
         [
@@ -517,16 +534,13 @@ def _validate_campsites(
             "parameters."
         )
         sys.exit(1)
-
-    mandatory_parameters = [start_date, end_date]
-    mandatory_string_parameters = ["--start-date", "--end-date"]
-    for field in mandatory_parameters:
-        if field is None and yaml_config is None:
-            logger.error(
-                "Campsite searches require the following mandatory search parameters: "
-                f"{', '.join(mandatory_string_parameters)}"
-            )
-            sys.exit(1)
+    if yaml_config is None:
+        search_windows = handle_search_windows(start_date=start_date, end_date=end_date)
+    else:
+        search_windows = ()
+    days_of_the_week = None
+    if day is not None:
+        days_of_the_week = {days_of_the_week_mapping[item] for item in day}
     if search_once is True and (continuous is True or search_forever is not None):
         logger.error(
             "You cannot specify `--search-once` alongside `--continuous` or `--search-forever`"
@@ -543,7 +557,7 @@ def _validate_campsites(
         ]
     ):
         continuous = True
-    return continuous
+    return continuous, search_windows, days_of_the_week
 
 
 @camply_command_line.command(cls=RichCommand)
@@ -561,6 +575,7 @@ def _validate_campsites(
 @nights_argument
 @provider_argument
 @weekends_argument
+@day_of_the_week_argument
 @end_date_argument
 @start_date_argument
 @campsite_id_argument
@@ -590,6 +605,7 @@ def campsites(
     offline_search_path: Optional[str],
     equipment: Tuple[Union[str, int]],
     equipment_id: Tuple[Union[str, int]],
+    day: Optional[Tuple[str]],
 ) -> None:
     """
     Find Available Campsites with Custom Search Criteria
@@ -606,7 +622,7 @@ def campsites(
         context.debug = debug
         _set_up_debug(debug=context.debug)
     notifications = make_list(notifications)
-    continuous = _validate_campsites(
+    continuous, search_windows, days_of_the_week = _validate_campsites(
         rec_area=rec_area,
         campground=campground,
         campsite=campsite,
@@ -622,6 +638,7 @@ def campsites(
         notify_first_try=notify_first_try,
         search_forever=search_forever,
         search_once=search_once,
+        day=day,
     )
     if len(notifications) == 0:
         notifications = ["silent"]
@@ -644,12 +661,8 @@ def campsites(
             if provider.lower() == provider_str.lower():
                 provider = provider_str
     else:
-        search_window = SearchWindow(
-            start_date=datetime.strptime(start_date, "%Y-%m-%d"),
-            end_date=datetime.strptime(end_date, "%Y-%m-%d"),
-        )
         provider_kwargs = {
-            "search_window": search_window,
+            "search_window": search_windows,
             "recreation_area": make_list(rec_area),
             "campgrounds": make_list(campground),
             "campsites": make_list(campsite),
@@ -659,6 +672,7 @@ def campsites(
             "offline_search_path": offline_search_path,
             "equipment": equipment,
             "equipment_id": equipment_id,
+            "days_of_the_week": days_of_the_week,
         }
         search_kwargs = {
             "log": True,
@@ -697,6 +711,35 @@ def providers(
             provider_name,
             search_class.__doc__.strip().splitlines()[0],
         )
+
+
+test_notifications_kwargs = notification_kwargs.copy()
+test_notifications_kwargs["help"] = test_notifications_kwargs["help"].replace(
+    "Enables continuous searching. ", ""
+)
+test_notifications_kwargs.pop("default")
+test_notifications_kwargs["required"] = True
+
+
+@camply_command_line.command(cls=RichCommand)
+@debug_option
+@click.option("--notifications", **test_notifications_kwargs)
+@click.pass_obj
+def test_notifications(
+    context: CamplyContext, debug: bool, notifications: Sequence[str]
+) -> None:
+    """
+    Test your notification provider setup
+    """
+    if context.debug is None:
+        context.debug = debug
+        _set_up_debug(debug=context.debug)
+    notification_providers = make_list(notifications)
+    provider = MultiNotifierProvider(provider=notification_providers)
+    logger.info("Testing your notification providers:")
+    for sub_provider in provider.providers:
+        logger.info('\t"%s"', sub_provider)
+    provider.send_campsites(campsites=[example_campsite])
 
 
 def cli():
