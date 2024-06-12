@@ -25,7 +25,7 @@ class BaseProvider(ABC):
         """
         Initialize with a session
         """
-        _user_agent = UserAgent(use_external_data=False, browsers=["chrome"]).chrome
+        _user_agent = UserAgent(browsers=["chrome"]).chrome
         self.session = requests.Session()
         self.headers = {"User-Agent": _user_agent}
         self.session.headers = self.headers

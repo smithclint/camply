@@ -136,3 +136,4 @@ node_modules/
 
 # Camply Data Files
 camply/providers/reserve_california/*.json
+camply/providers/reserve_florida/*.json
